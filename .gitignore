@@ -8,8 +8,8 @@ venv-1/
 .idea/
 # ignore the .env file
 .env
-# ignore the data directory (except pre-built ChromaDB and skin images)
-# data/
+# ignore the data directory
+data/
 
 # ignore the images directory
 images/
