@@ -10,3 +10,4 @@ python-dotenv
 torch
 numpy
 matplotlib
+protobuf<4.0.0
