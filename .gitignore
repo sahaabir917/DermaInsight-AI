@@ -1,0 +1,22 @@
+
+# ignore the venv directory
+venv/
+venv-1/
+# ignore the .vscode directory
+.vscode/
+# ignore the .idea directory
+.idea/
+# ignore the .env file
+.env
+# ignore the data directory
+data/
+
+# ignore the images directory
+images/
+
+# ignore dataset directory
+dataset/
+LICENSE
+
+# ignore
+
