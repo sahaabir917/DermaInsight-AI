@@ -1,5 +1,5 @@
 import streamlit as st
-from datasets import load_dataset
+# from datasets import load_dataset
 import os
 from PIL import Image
 import warnings
@@ -435,41 +435,41 @@ section[data-testid="stSidebar"] { display: none !important; }
 # === Load 100 samples per dx category ===
 IMAGE_DIR = "./data/skin_images"
 
-@st.cache_data
-def load_balanced_dataset():
-    ds = load_dataset("marmal88/skin_cancer", split="train")
-    counts = {}
-    selected = []
-    for i, sample in enumerate(ds):
-        cat = sample.get("dx", "unknown")
-        if counts.get(cat, 0) < 100:
-            selected.append(i)
-            counts[cat] = counts.get(cat, 0) + 1
-    return ds.select(selected)
+# @st.cache_data
+# def load_balanced_dataset():
+#     ds = load_dataset("marmal88/skin_cancer", split="train")
+#     counts = {}
+#     selected = []
+#     for i, sample in enumerate(ds):
+#         cat = sample.get("dx", "unknown")
+#         if counts.get(cat, 0) < 100:
+#             selected.append(i)
+#             counts[cat] = counts.get(cat, 0) + 1
+#     return ds.select(selected)
 
-@st.cache_data
-def prepare_images_and_metadata(_dataset):
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    uris, metadatas, ids = [], [], []
-    for i, sample in enumerate(_dataset):
-        image_id = sample.get("image_id", f"img_{i}")
-        img_path = os.path.join(IMAGE_DIR, f"{image_id}.jpg")
-        if not os.path.exists(img_path):
-            sample["image"].save(img_path)
-        uris.append(img_path)
-        ids.append(image_id)
-        metadatas.append({
-            "image_id":     image_id,
-            "lesion_id":    sample.get("lesion_id", ""),
-            "dx":           sample.get("dx", ""),
-            "dx_type":      sample.get("dx_type", ""),
-            "age":          str(sample.get("age", "")),
-            "sex":          sample.get("sex", ""),
-            "localization": sample.get("localization", ""),
-        })
-    return uris, metadatas, ids
+# @st.cache_data
+# def prepare_images_and_metadata(_dataset):
+#     os.makedirs(IMAGE_DIR, exist_ok=True)
+#     uris, metadatas, ids = [], [], []
+#     for i, sample in enumerate(_dataset):
+#         image_id = sample.get("image_id", f"img_{i}")
+#         img_path = os.path.join(IMAGE_DIR, f"{image_id}.jpg")
+#         if not os.path.exists(img_path):
+#             sample["image"].save(img_path)
+#         uris.append(img_path)
+#         ids.append(image_id)
+#         metadatas.append({
+#             "image_id":     image_id,
+#             "lesion_id":    sample.get("lesion_id", ""),
+#             "dx":           sample.get("dx", ""),
+#             "dx_type":      sample.get("dx_type", ""),
+#             "age":          str(sample.get("age", "")),
+#             "sex":          sample.get("sex", ""),
+#             "localization": sample.get("localization", ""),
+#         })
+#     return uris, metadatas, ids
 
-# === ChromaDB setup ===
+# === ChromaDB setup — uses pre-built DB shipped with the repo ===
 chroma_client = chromadb.PersistentClient(path=os.path.abspath("./data/skin.db"))
 image_loader = ImageLoader()
 embedding_function = OpenCLIPEmbeddingFunction()
@@ -479,33 +479,30 @@ skin_collection = chroma_client.get_or_create_collection(
     data_loader=image_loader,
 )
 
-# === Load from collection if already populated, otherwise download & embed ===
-EXPECTED_COUNT = 700  # 7 dx categories × 100 samples
+# === Load metadata from pre-built collection ===
+# (Download & embed block commented out — DB and images are shipped in the repo)
+existing  = skin_collection.get(include=["metadatas", "uris"])
+ids       = existing["ids"]
+metadatas = existing["metadatas"]
+uris      = existing["uris"]
 
-if skin_collection.count() >= EXPECTED_COUNT:
-    # Data already embedded — skip download and embedding entirely
-    existing  = skin_collection.get(include=["metadatas", "uris"])
-    ids       = existing["ids"]
-    metadatas = existing["metadatas"]
-    uris      = existing["uris"]
-else:
-    # First run — download dataset, save images, embed into ChromaDB
-    ds = load_balanced_dataset()
-    uris, metadatas, ids = prepare_images_and_metadata(ds)
-
-    existing_ids = set(skin_collection.get()["ids"])
-    to_add = [(u, m, d) for u, m, d in zip(uris, metadatas, ids) if d not in existing_ids]
-    if to_add:
-        skin_collection.add(
-            uris=[x[0] for x in to_add],
-            metadatas=[x[1] for x in to_add],
-            ids=[x[2] for x in to_add],
-        )
-
-    existing  = skin_collection.get(include=["metadatas", "uris"])
-    ids       = existing["ids"]
-    metadatas = existing["metadatas"]
-    uris      = existing["uris"]
+# === Uncomment below to re-build the DB from scratch (e.g. on a new machine) ===
+# EXPECTED_COUNT = 700  # 7 dx categories × 100 samples
+# if skin_collection.count() < EXPECTED_COUNT:
+#     ds = load_balanced_dataset()
+#     uris, metadatas, ids = prepare_images_and_metadata(ds)
+#     existing_ids = set(skin_collection.get()["ids"])
+#     to_add = [(u, m, d) for u, m, d in zip(uris, metadatas, ids) if d not in existing_ids]
+#     if to_add:
+#         skin_collection.add(
+#             uris=[x[0] for x in to_add],
+#             metadatas=[x[1] for x in to_add],
+#             ids=[x[2] for x in to_add],
+#         )
+#     existing  = skin_collection.get(include=["metadatas", "uris"])
+#     ids       = existing["ids"]
+#     metadatas = existing["metadatas"]
+#     uris      = existing["uris"]
 
 # === Helper: display image from URI ===
 def show_image_from_uri(uri, caption="", width=250):
