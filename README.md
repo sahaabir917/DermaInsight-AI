@@ -2,7 +2,7 @@
 title: DermaInsight AI
 emoji: 🔬
 colorFrom: indigo
-colorTo: cyan
+colorTo: blue
 sdk: streamlit
 sdk_version: "1.58.0"
 python_version: "3.11"
