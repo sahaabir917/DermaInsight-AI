@@ -4,7 +4,7 @@ emoji: 🔬
 colorFrom: indigo
 colorTo: blue
 sdk: streamlit
-sdk_version: "1.58.0"
+sdk_version: "1.36.0"
 python_version: "3.11"
 app_file: Skincare.py
 pinned: false

@@ -18,13 +18,20 @@ import io
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
-# load_dotenv()
+load_dotenv()
 
-if "OPENAI_API_KEY" in st.secrets:
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+def load_hosted_secrets():
+    for key in ("OPENAI_API_KEY", "HF_TOKEN"):
+        if os.getenv(key):
+            continue
+        try:
+            value = st.secrets.get(key)
+        except Exception:
+            value = None
+        if value:
+            os.environ[key] = str(value)
 
-if "HF_TOKEN" in st.secrets:
-    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
+load_hosted_secrets()
 
 # === Page Config ===
 st.set_page_config(
@@ -444,11 +451,12 @@ IMAGE_DIR = "./data/skin_images"
 @st.cache_data
 def load_balanced_dataset():
     ds = load_dataset("marmal88/skin_cancer", split="train")
+    samples_per_category = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
     counts = {}
     selected = []
     for i, sample in enumerate(ds):
         cat = sample.get("dx", "unknown")
-        if counts.get(cat, 0) < 100:
+        if counts.get(cat, 0) < samples_per_category:
             selected.append(i)
             counts[cat] = counts.get(cat, 0) + 1
     return ds.select(selected)
@@ -486,7 +494,8 @@ skin_collection = chroma_client.get_or_create_collection(
 )
 
 # === Load from collection if already populated, otherwise download & embed ===
-EXPECTED_COUNT = 700  # 7 dx categories × 100 samples
+SAMPLES_PER_CATEGORY = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
+EXPECTED_COUNT = 7 * SAMPLES_PER_CATEGORY
 
 if skin_collection.count() >= EXPECTED_COUNT:
     existing  = skin_collection.get(include=["metadatas", "uris"])
@@ -606,7 +615,6 @@ def query_db(query_text=None, query_image=None, results=2):
 def get_vision_model():
     return ChatOpenAI(model="gpt-4o", temperature=0.0)
 
-vision_model = get_vision_model()
 parser = StrOutputParser()
 
 SYSTEM_PROMPT = """You are a dermatology education assistant. Your job is to visually analyze \
@@ -707,8 +715,6 @@ image_prompt = ChatPromptTemplate.from_messages(
         ),
     ]
 )
-
-vision_chain = image_prompt | vision_model | parser
 
 # ═══════════════════════════════════════════════
 # HERO HEADER
@@ -865,7 +871,14 @@ if submitted:
     st.markdown('<div class="section-title">🤖 AI Clinical Assessment</div>', unsafe_allow_html=True)
     ai_placeholder = st.markdown('<div class="shimmer-box" style="height:320px"></div>', unsafe_allow_html=True)
 
+    if not os.getenv("OPENAI_API_KEY"):
+        ai_placeholder.empty()
+        st.error("OPENAI_API_KEY is not configured. Add it as a hosted secret before running analysis.")
+        st.stop()
+
     with st.spinner(""):
+        vision_model = get_vision_model()
+        vision_chain = image_prompt | vision_model | parser
         prompt_input = format_prompt_inputs(results, search_query, uploaded_image_b64)
 
         if uploaded_image_b64:
