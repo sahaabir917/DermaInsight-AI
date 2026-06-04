@@ -18,7 +18,13 @@ import io
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
-load_dotenv()
+# load_dotenv()
+
+if "OPENAI_API_KEY" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+
+if "HF_TOKEN" in st.secrets:
+    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
 
 # === Page Config ===
 st.set_page_config(
