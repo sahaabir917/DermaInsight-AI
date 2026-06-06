@@ -1,4 +1,16 @@
-# Building-Smarter-Systems---Multimodal-RAG-with-GPT-4-for-Search-Recommendations# DermaInsight AI Product Overview
+---
+title: DermaInsight AI
+emoji: 🔬
+colorFrom: indigo
+colorTo: blue
+sdk: streamlit
+sdk_version: "1.36.0"
+python_version: "3.11"
+app_file: Skincare.py
+pinned: false
+---
+
+# DermaInsight AI Product Overview
 
 ## Non-Technical Overview
 

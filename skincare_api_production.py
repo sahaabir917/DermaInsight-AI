@@ -473,11 +473,12 @@ async def analyze(
     matched_cases: List[MatchedCase] = []
     similar_image_urls: List[str] = []
 
+    base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:8001")
     for idx, (uri, meta) in enumerate(
         zip(db_results["uris"][0], db_results["metadatas"][0])
     ):
         filename = os.path.basename(uri)
-        img_url = f"http://127.0.0.1:8001/images/{filename}"
+        img_url = f"{base_url}/images/{filename}"
         similar_image_urls.append(img_url)
         matched_cases.append(
             MatchedCase(
