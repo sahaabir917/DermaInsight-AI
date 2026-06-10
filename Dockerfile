@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 7860
+EXPOSE 8501
 
-CMD ["streamlit", "run", "Skincare.py", "--server.port=7860", "--server.address=0.0.0.0"]
+CMD sh -c "streamlit run Skincare.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false"

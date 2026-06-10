@@ -483,40 +483,34 @@ def prepare_images_and_metadata(_dataset):
         })
     return uris, metadatas, ids
 
-# === ChromaDB setup ===
-chroma_client = chromadb.PersistentClient(path=os.path.abspath("./data/skin.db"))
-image_loader = ImageLoader()
-embedding_function = OpenCLIPEmbeddingFunction()
-skin_collection = chroma_client.get_or_create_collection(
-    "skin_collection",
-    embedding_function=embedding_function,
-    data_loader=image_loader,
-)
+@st.cache_resource(show_spinner="Initialising AI models and database — one moment…")
+def init_db():
+    _client = chromadb.PersistentClient(path=os.path.abspath("./data/skin.db"))
+    _loader = ImageLoader()
+    _emb_fn = OpenCLIPEmbeddingFunction()
+    _col = _client.get_or_create_collection(
+        "skin_collection",
+        embedding_function=_emb_fn,
+        data_loader=_loader,
+    )
+    samples_per_cat = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
+    expected = 7 * samples_per_cat
+    if _col.count() < expected:
+        ds = load_balanced_dataset()
+        _uris, _metas, _ids = prepare_images_and_metadata(ds)
+        existing_ids = set(_col.get()["ids"])
+        to_add = [(u, m, d) for u, m, d in zip(_uris, _metas, _ids) if d not in existing_ids]
+        if to_add:
+            _col.add(
+                uris=[x[0] for x in to_add],
+                metadatas=[x[1] for x in to_add],
+                ids=[x[2] for x in to_add],
+            )
+    existing = _col.get(include=["metadatas", "uris"])
+    return _col, _emb_fn, existing["ids"], existing["metadatas"], existing["uris"]
 
-# === Load from collection if already populated, otherwise download & embed ===
-SAMPLES_PER_CATEGORY = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
-EXPECTED_COUNT = 7 * SAMPLES_PER_CATEGORY
-
-if skin_collection.count() >= EXPECTED_COUNT:
-    existing  = skin_collection.get(include=["metadatas", "uris"])
-    ids       = existing["ids"]
-    metadatas = existing["metadatas"]
-    uris      = existing["uris"]
-else:
-    ds = load_balanced_dataset()
-    uris, metadatas, ids = prepare_images_and_metadata(ds)
-    existing_ids = set(skin_collection.get()["ids"])
-    to_add = [(u, m, d) for u, m, d in zip(uris, metadatas, ids) if d not in existing_ids]
-    if to_add:
-        skin_collection.add(
-            uris=[x[0] for x in to_add],
-            metadatas=[x[1] for x in to_add],
-            ids=[x[2] for x in to_add],
-        )
-    existing  = skin_collection.get(include=["metadatas", "uris"])
-    ids       = existing["ids"]
-    metadatas = existing["metadatas"]
-#     uris      = existing["uris"]
+# init_db() is called later in the app flow after page config so the HTTP server
+# starts up before the heavy CLIP model / dataset loading begins.
 
 # === Helper: display image from URI ===
 def show_image_from_uri(uri, caption="", width=250):
@@ -715,6 +709,10 @@ image_prompt = ChatPromptTemplate.from_messages(
         ),
     ]
 )
+
+# Run once per server process — HTTP server is already up by this point so
+# Render's health check passes before the heavy CLIP/dataset init begins.
+skin_collection, embedding_function, ids, metadatas, uris = init_db()
 
 # ═══════════════════════════════════════════════
 # HERO HEADER
