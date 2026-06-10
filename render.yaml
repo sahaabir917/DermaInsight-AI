@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: dermainsight-ai
+    runtime: docker
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SAMPLES_PER_CATEGORY
+        value: "5"

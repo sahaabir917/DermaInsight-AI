@@ -7,10 +7,7 @@ langchain-openai
 langchain-core
 langchain-community
 python-dotenv
-torch
-torchvision
 numpy
 matplotlib
-protobuf<4.0.0
 fastapi
 uvicorn[standard]
