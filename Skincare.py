@@ -533,36 +533,49 @@ def get_image_data_url(source, mime_type="image/jpeg"):
     return f"data:{mime_type};base64,{b64}"
 
 # === Helper: format prompt inputs ===
-def format_prompt_inputs(data, user_query, uploaded_image_b64=None):
+# def format_prompt_inputs(data, user_query, uploaded_image_b64=None):
+#     inputs = {}
+#     inputs["user_query"] = user_query
+
+#     # Retrieved images from ChromaDB
+#     image_path_1 = data["uris"][0][0]
+#     image_path_2 = data["uris"][0][1]
+#     inputs["image_data_1"] = encode_image_to_base64(image_path_1)
+#     inputs["image_data_2"] = encode_image_to_base64(image_path_2)
+
+#     # Metadata context string
+#     meta_1 = data.get("metadatas", [[{}, {}]])[0][0]
+#     meta_2 = data.get("metadatas", [[{}, {}]])[0][1]
+#     inputs["metadata_context"] = (
+#         f"Image 1 — Diagnosis: {meta_1.get('dx','N/A')}, "
+#         f"Type: {meta_1.get('dx_type','N/A')}, "
+#         f"Age: {meta_1.get('age','N/A')}, Sex: {meta_1.get('sex','N/A')}, "
+#         f"Localization: {meta_1.get('localization','N/A')}. "
+#         f"Image 2 — Diagnosis: {meta_2.get('dx','N/A')}, "
+#         f"Type: {meta_2.get('dx_type','N/A')}, "
+#         f"Age: {meta_2.get('age','N/A')}, Sex: {meta_2.get('sex','N/A')}, "
+#         f"Localization: {meta_2.get('localization','N/A')}."
+#     )
+
+#     # Optional uploaded image
+#     inputs["uploaded_image_data"] = uploaded_image_b64 or ""
+#     return inputs
+
+def format_prompt_inputs(match_uri, match_meta, user_query, uploaded_image_b64=None):
     inputs = {}
     inputs["user_query"] = user_query
-
-    # Retrieved images from ChromaDB
-    image_path_1 = data["uris"][0][0]
-    image_path_2 = data["uris"][0][1]
-    inputs["image_data_1"] = encode_image_to_base64(image_path_1)
-    inputs["image_data_2"] = encode_image_to_base64(image_path_2)
-
-    # Metadata context string
-    meta_1 = data.get("metadatas", [[{}, {}]])[0][0]
-    meta_2 = data.get("metadatas", [[{}, {}]])[0][1]
+    inputs["image_data_1"] = encode_image_to_base64(match_uri)
     inputs["metadata_context"] = (
-        f"Image 1 — Diagnosis: {meta_1.get('dx','N/A')}, "
-        f"Type: {meta_1.get('dx_type','N/A')}, "
-        f"Age: {meta_1.get('age','N/A')}, Sex: {meta_1.get('sex','N/A')}, "
-        f"Localization: {meta_1.get('localization','N/A')}. "
-        f"Image 2 — Diagnosis: {meta_2.get('dx','N/A')}, "
-        f"Type: {meta_2.get('dx_type','N/A')}, "
-        f"Age: {meta_2.get('age','N/A')}, Sex: {meta_2.get('sex','N/A')}, "
-        f"Localization: {meta_2.get('localization','N/A')}."
+        f"Classified Diagnosis: {match_meta.get('dx','N/A')}, "
+        f"Type: {match_meta.get('dx_type','N/A')}, "
+        f"Age: {match_meta.get('age','N/A')}, Sex: {match_meta.get('sex','N/A')}, "
+        f"Localization: {match_meta.get('localization','N/A')}."
     )
-
-    # Optional uploaded image
     inputs["uploaded_image_data"] = uploaded_image_b64 or ""
     return inputs
 
 # === Query ChromaDB ===
-def query_db(query_text=None, query_image=None, results=2):
+def query_db(query_text=None, query_image=None, results=5):
     import numpy as np
     import torch
 
@@ -603,6 +616,27 @@ def query_db(query_text=None, query_image=None, results=2):
         )
 
     return res
+
+def classify_top_match(results):
+    """
+    From k=5 retrieved results, pick the most common dx (majority vote).
+    Returns (winning_dx, best_uri, best_meta) — the URI/meta of the
+    highest-ranked image that belongs to the winning class.
+    """
+    from collections import Counter
+    uris      = results["uris"][0]       # list of 5 paths
+    metas     = results["metadatas"][0]  # list of 5 dicts
+
+    dx_labels = [m.get("dx", "unknown") for m in metas]
+    winning_dx = Counter(dx_labels).most_common(1)[0][0]
+
+    # Pick the first (closest) image that belongs to the winning class
+    for uri, meta in zip(uris, metas):
+        if meta.get("dx") == winning_dx:
+            return winning_dx, uri, meta
+
+    # Fallback: just use the top result
+    return dx_labels[0], uris[0], metas[0]
 
 # === Vision Model ===
 @st.cache_resource
@@ -680,6 +714,36 @@ TONE: Calm, factual, and reassuring. Only describe what is visible — never ass
 symptoms the user did not mention. Be direct about severity without causing panic."""
 
 # Prompt for text-only path (no uploaded image)
+# image_prompt = ChatPromptTemplate.from_messages(
+#     [
+#         ("system", SYSTEM_PROMPT),
+#         (
+#             "user",
+#             [
+#                 {
+#                     "type": "text",
+#                     "text": (
+#                         "Additional context from the user (if any): {user_query}\n\n"
+#                         "Matched cases from knowledge base — clinical metadata:\n{metadata_context}\n\n"
+#                         "The two images are the closest matching cases retrieved from the database. "
+#                         "Analyse what you see visually in these reference images and provide "
+#                         "your full structured assessment now."
+#                         "{uploaded_note}"
+#                     ),
+#                 },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": "data:image/jpeg;base64,{image_data_1}",
+#                 },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": "data:image/jpeg;base64,{image_data_2}",
+#                 },
+#             ],
+#         ),
+#     ]
+# )
+
 image_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM_PROMPT),
@@ -690,20 +754,15 @@ image_prompt = ChatPromptTemplate.from_messages(
                     "type": "text",
                     "text": (
                         "Additional context from the user (if any): {user_query}\n\n"
-                        "Matched cases from knowledge base — clinical metadata:\n{metadata_context}\n\n"
-                        "The two images are the closest matching cases retrieved from the database. "
-                        "Analyse what you see visually in these reference images and provide "
-                        "your full structured assessment now."
+                        "Classified case from knowledge base — clinical metadata:\n{metadata_context}\n\n"
+                        "The image below is the closest matching reference case. "
+                        "Analyse it and provide your full structured assessment."
                         "{uploaded_note}"
                     ),
                 },
                 {
                     "type": "image_url",
                     "image_url": "data:image/jpeg;base64,{image_data_1}",
-                },
-                {
-                    "type": "image_url",
-                    "image_url": "data:image/jpeg;base64,{image_data_2}",
                 },
             ],
         ),
@@ -828,42 +887,76 @@ if submitted:
     # Replace shimmers with real content
     shimmer1.empty(); shimmer2.empty()
 
-    # ── Match Cards ─────────────────────────────
-    st.markdown('<div class="section-title">🧬 Similar Cases from Knowledge Base</div>', unsafe_allow_html=True)
-    match_cols = st.columns(2, gap="large")
-    colors = [("match-num-1", "#818cf8"), ("match-num-2", "#22d3ee")]
+    # # ── Match Cards ─────────────────────────────
+    # st.markdown('<div class="section-title">🧬 Similar Cases from Knowledge Base</div>', unsafe_allow_html=True)
+    # match_cols = st.columns(2, gap="large")
+    # colors = [("match-num-1", "#818cf8"), ("match-num-2", "#22d3ee")]
 
-    for idx, (uri, meta) in enumerate(zip(results["uris"][0], results["metadatas"][0])):
-        num_class, _ = colors[idx]
-        dx      = meta.get("dx", "unknown").replace("_", " ").title()
-        loc     = meta.get("localization", "—").replace("_", " ").title()
-        age     = meta.get("age", "—")
-        sex     = meta.get("sex", "—").title()
-        dx_type = meta.get("dx_type", "—")
+    # for idx, (uri, meta) in enumerate(zip(results["uris"][0], results["metadatas"][0])):
+    #     num_class, _ = colors[idx]
+    #     dx      = meta.get("dx", "unknown").replace("_", " ").title()
+    #     loc     = meta.get("localization", "—").replace("_", " ").title()
+    #     age     = meta.get("age", "—")
+    #     sex     = meta.get("sex", "—").title()
+    #     dx_type = meta.get("dx_type", "—")
 
-        with match_cols[idx]:
-            st.markdown(f"""
-            <div class="match-card">
-                <div class="match-card-header">
-                    <span class="match-num {num_class}">Match {idx + 1}</span>
-                    <span class="match-dx">{dx}</span>
-                </div>
+    #     with match_cols[idx]:
+    #         st.markdown(f"""
+    #         <div class="match-card">
+    #             <div class="match-card-header">
+    #                 <span class="match-num {num_class}">Match {idx + 1}</span>
+    #                 <span class="match-dx">{dx}</span>
+    #             </div>
+    #         </div>
+    #         """, unsafe_allow_html=True)
+    #         img = Image.open(uri)
+    #         st.image(img, width=400)
+    #         st.markdown(f"""
+    #         <div class="match-card-body">
+    #             <div class="meta-row">
+    #                 <span class="meta-chip chip-loc">📍 {loc}</span>
+    #                 <span class="meta-chip chip-age">🧑 Age {age}</span>
+    #                 <span class="meta-chip chip-sex">⚧ {sex}</span>
+    #                 <span class="meta-chip chip-type">🔬 {dx_type}</span>
+    #             </div>
+    #         </div>
+    #         """, unsafe_allow_html=True)
+
+    # st.markdown('<hr class="styled-divider">', unsafe_allow_html=True)
+
+    # ── Majority-vote classification ─────────────
+    winning_dx, match_uri, match_meta = classify_top_match(results)
+
+    # ── Single Match Card ────────────────────────
+    st.markdown('<div class="section-title">🧬 Classified Condition</div>', unsafe_allow_html=True)
+    card_col, _ = st.columns([1, 1], gap="large")
+
+    dx      = match_meta.get("dx", "unknown").replace("_", " ").title()
+    loc     = match_meta.get("localization", "—").replace("_", " ").title()
+    age     = match_meta.get("age", "—")
+    sex     = match_meta.get("sex", "—").title()
+    dx_type = match_meta.get("dx_type", "—")
+
+    with card_col:
+        st.markdown(f"""
+        <div class="match-card">
+            <div class="match-card-header">
+                <span class="match-num match-num-1">Classification</span>
+                <span class="match-dx">{dx}</span>
             </div>
-            """, unsafe_allow_html=True)
-            img = Image.open(uri)
-            st.image(img, width=400)
-            st.markdown(f"""
-            <div class="match-card-body">
-                <div class="meta-row">
-                    <span class="meta-chip chip-loc">📍 {loc}</span>
-                    <span class="meta-chip chip-age">🧑 Age {age}</span>
-                    <span class="meta-chip chip-sex">⚧ {sex}</span>
-                    <span class="meta-chip chip-type">🔬 {dx_type}</span>
-                </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.image(Image.open(match_uri), width=400)
+        st.markdown(f"""
+        <div class="match-card-body">
+            <div class="meta-row">
+                <span class="meta-chip chip-loc">📍 {loc}</span>
+                <span class="meta-chip chip-age">🧑 Age {age}</span>
+                <span class="meta-chip chip-sex">⚧ {sex}</span>
+                <span class="meta-chip chip-type">🔬 {dx_type}</span>
             </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown('<hr class="styled-divider">', unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── AI Analysis ─────────────────────────────
     st.markdown('<div class="section-title">🤖 AI Clinical Assessment</div>', unsafe_allow_html=True)
@@ -874,23 +967,22 @@ if submitted:
         st.error("OPENAI_API_KEY is not configured. Add it as a hosted secret before running analysis.")
         st.stop()
 
-    with st.spinner(""):
+     with st.spinner(""):
         vision_model = get_vision_model()
         vision_chain = image_prompt | vision_model | parser
-        prompt_input = format_prompt_inputs(results, search_query, uploaded_image_b64)
+        prompt_input = format_prompt_inputs(match_uri, match_meta, search_query, uploaded_image_b64)
 
         if uploaded_image_b64:
             user_text = (
                 f"Additional context from the user (if any): {query if query.strip() else 'None provided.'}\n\n"
-                f"Matched cases from knowledge base — clinical metadata:\n{prompt_input['metadata_context']}\n\n"
-                "Images 1 and 2 are the closest matching cases from the database. "
-                "Image 3 is the user's uploaded skin image — this is the PRIMARY subject to analyse. "
-                "Visually compare Image 3 with Images 1 and 2, then provide your full structured assessment."
+                f"Classified case from knowledge base — clinical metadata:\n{prompt_input['metadata_context']}\n\n"
+                "Image 1 is the closest matching reference case from the database. "
+                "Image 2 is the user's uploaded skin image — this is the PRIMARY subject to analyse. "
+                "Visually compare Image 2 with Image 1, then provide your full structured assessment."
             )
             user_content = [
                 {"type": "text", "text": user_text},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{prompt_input['image_data_1']}"}},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{prompt_input['image_data_2']}"}},
                 {"type": "image_url", "image_url": {"url": f"data:{uploaded_mime};base64,{uploaded_image_b64}"}},
             ]
             raw = vision_model.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content)])
