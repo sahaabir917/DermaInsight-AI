@@ -340,6 +340,45 @@ section[data-testid="stSidebar"] { display: none !important; }
 .chip-type { background: rgba(251,191,36,0.12);  color: #fde68a; border: 1px solid rgba(251,191,36,0.2);  }
 
 /* ─────────────────────────────────────────────
+   RETRIEVED CHUNK CARDS
+───────────────────────────────────────────── */
+.chunk-card {
+    background: #0f172a;
+    border: 1.5px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    margin-bottom: 0.5rem;
+}
+.chunk-card:hover { border-color: #334155; box-shadow: 0 4px 18px rgba(0,0,0,0.35); }
+.chunk-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    background: #0d1117;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.chunk-badge {
+    font-size: 0.6rem; font-weight: 700; padding: 2px 7px;
+    border-radius: 999px; letter-spacing: 0.04em; white-space: nowrap;
+}
+.cb-1 { background: #312e81; color: #a5b4fc; }
+.cb-2 { background: #164e63; color: #67e8f9; }
+.cb-3 { background: #14532d; color: #86efac; }
+.cb-4 { background: #7c2d12; color: #fdba74; }
+.cb-5 { background: #4a1d96; color: #d8b4fe; }
+.chunk-dx {
+    font-size: 0.65rem; font-weight: 600; color: #e2e8f0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chunk-sim { font-size: 0.58rem; color: #475569; margin-left: auto; white-space: nowrap; }
+.chunk-meta {
+    padding: 0.45rem 0.75rem 0.6rem;
+    font-size: 0.6rem; color: #64748b; line-height: 1.65;
+}
+
+/* ─────────────────────────────────────────────
    PREVIEW CARD
 ───────────────────────────────────────────── */
 .preview-card {
@@ -445,27 +484,27 @@ section[data-testid="stSidebar"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# === Load 100 samples per dx category ===
+# === Load up to 100 samples per dx category from train split ===
 IMAGE_DIR = "./data/skin_images"
+SAMPLES_PER_CATEGORY = 100
 
 @st.cache_data
-def load_balanced_dataset():
-    ds = load_dataset("marmal88/skin_cancer", split="train")
-    samples_per_category = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
-    counts = {}
-    selected = []
+def load_and_prepare_dataset():
+    """Stream the dataset directly from the Hub (no download_and_prepare step),
+    save each image to disk, and return only serializable data."""
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    ds = load_dataset(
+        "marmal88/skin_cancer",
+        split="train",
+        streaming=True,
+        trust_remote_code=True,
+    )
+    counts: dict = {}
+    uris, metadatas, ids = [], [], []
     for i, sample in enumerate(ds):
         cat = sample.get("dx", "unknown")
-        if counts.get(cat, 0) < samples_per_category:
-            selected.append(i)
-            counts[cat] = counts.get(cat, 0) + 1
-    return ds.select(selected)
-
-@st.cache_data
-def prepare_images_and_metadata(_dataset):
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    uris, metadatas, ids = [], [], []
-    for i, sample in enumerate(_dataset):
+        if counts.get(cat, 0) >= SAMPLES_PER_CATEGORY:
+            continue
         image_id = sample.get("image_id", f"img_{i}")
         img_path = os.path.join(IMAGE_DIR, f"{image_id}.jpg")
         if not os.path.exists(img_path):
@@ -475,12 +514,13 @@ def prepare_images_and_metadata(_dataset):
         metadatas.append({
             "image_id":     image_id,
             "lesion_id":    sample.get("lesion_id", ""),
-            "dx":           sample.get("dx", ""),
+            "dx":           cat,
             "dx_type":      sample.get("dx_type", ""),
             "age":          str(sample.get("age", "")),
             "sex":          sample.get("sex", ""),
             "localization": sample.get("localization", ""),
         })
+        counts[cat] = counts.get(cat, 0) + 1
     return uris, metadatas, ids
 
 @st.cache_resource(show_spinner="Initialising AI models and database — one moment…")
@@ -493,19 +533,18 @@ def init_db():
         embedding_function=_emb_fn,
         data_loader=_loader,
     )
-    samples_per_cat = int(os.getenv("SAMPLES_PER_CATEGORY", "10"))
-    expected = 7 * samples_per_cat
-    if _col.count() < expected:
-        ds = load_balanced_dataset()
-        _uris, _metas, _ids = prepare_images_and_metadata(ds)
-        existing_ids = set(_col.get()["ids"])
-        to_add = [(u, m, d) for u, m, d in zip(_uris, _metas, _ids) if d not in existing_ids]
-        if to_add:
+    if _col.count() == 0:
+        # DB is empty — stream, save images, and embed in batches to avoid OOM.
+        _uris, _metas, _ids = load_and_prepare_dataset()
+        batch_size = 50
+        for start in range(0, len(_ids), batch_size):
+            end = start + batch_size
             _col.add(
-                uris=[x[0] for x in to_add],
-                metadatas=[x[1] for x in to_add],
-                ids=[x[2] for x in to_add],
+                uris=_uris[start:end],
+                metadatas=_metas[start:end],
+                ids=_ids[start:end],
             )
+    # If count > 0 the .db file already has embeddings — skip entirely.
     existing = _col.get(include=["metadatas", "uris"])
     return _col, _emb_fn, existing["ids"], existing["metadatas"], existing["uris"]
 
@@ -561,18 +600,58 @@ def get_image_data_url(source, mime_type="image/jpeg"):
 #     inputs["uploaded_image_data"] = uploaded_image_b64 or ""
 #     return inputs
 
-def format_prompt_inputs(match_uri, match_meta, user_query, uploaded_image_b64=None):
-    inputs = {}
-    inputs["user_query"] = user_query
-    inputs["image_data_1"] = encode_image_to_base64(match_uri)
-    inputs["metadata_context"] = (
-        f"Classified Diagnosis: {match_meta.get('dx','N/A')}, "
-        f"Type: {match_meta.get('dx_type','N/A')}, "
-        f"Age: {match_meta.get('age','N/A')}, Sex: {match_meta.get('sex','N/A')}, "
-        f"Localization: {match_meta.get('localization','N/A')}."
-    )
-    inputs["uploaded_image_data"] = uploaded_image_b64 or ""
-    return inputs
+def build_multi_case_message(results, user_query, uploaded_image_b64=None, uploaded_mime="image/jpeg"):
+    """Build LLM message content with all N retrieved reference cases + optional user image."""
+    uris  = results["uris"][0]
+    metas = results["metadatas"][0]
+    n     = len(uris)
+
+    meta_lines = []
+    for i, meta in enumerate(metas, 1):
+        meta_lines.append(
+            f"Case {i}: Diagnosis={meta.get('dx','N/A')}, Type={meta.get('dx_type','N/A')}, "
+            f"Age={meta.get('age','N/A')}, Sex={meta.get('sex','N/A')}, "
+            f"Localization={meta.get('localization','N/A')}"
+        )
+    meta_context = "\n".join(meta_lines)
+
+    if uploaded_image_b64:
+        intro = (
+            f"User description (if any): {user_query if user_query.strip() else 'None provided.'}\n\n"
+            f"You are given {n} reference cases from the knowledge base. Images follow in order: "
+            f"Case 1, Case 2, … Case {n}. The FINAL image is the USER IMAGE — the primary subject.\n\n"
+            f"Reference case metadata:\n{meta_context}\n\n"
+            "Select the best-matching reference case and provide your full structured assessment."
+        )
+    else:
+        intro = (
+            f"User description: {user_query}\n\n"
+            f"You are given {n} reference cases from the knowledge base. Images follow in order: "
+            f"Case 1, Case 2, … Case {n}.\n\n"
+            f"Reference case metadata:\n{meta_context}\n\n"
+            "Select the best-matching reference case and provide your full structured assessment."
+        )
+
+    content = [{"type": "text", "text": intro}]
+    for uri in uris:
+        b64 = encode_image_to_base64(uri)
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+    if uploaded_image_b64:
+        content.append({"type": "image_url", "image_url": {"url": f"data:{uploaded_mime};base64,{uploaded_image_b64}"}})
+    return content
+
+
+def extract_chosen_case(response, results):
+    """Parse 'Case N' from the LLM's Selected Reference Case section and return (uri, meta)."""
+    import re
+    uris  = results["uris"][0]
+    metas = results["metadatas"][0]
+    m = re.search(r'Selected Reference Case[^\n]*\n\*\*Case\s+(\d+)', response, re.IGNORECASE)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(uris):
+            return uris[idx], metas[idx]
+    return uris[0], metas[0]
 
 # === Query ChromaDB ===
 def query_db(query_text=None, query_image=None, results=5):
@@ -646,14 +725,24 @@ def get_vision_model():
 parser = StrOutputParser()
 
 SYSTEM_PROMPT = """You are a dermatology education assistant. Your job is to visually analyze \
-skin lesion images and explain what you see — based solely on what is visible in the image \
+skin lesion images and explain what you see — based solely on what is visible in the images \
 and the matched cases from the knowledge base. Never invent symptoms the user did not report.
 
 You will be given:
-- The user's uploaded skin image (primary subject)
-- 2 similar cases retrieved from a medical knowledge base, with their clinical metadata
+- Several reference cases retrieved from a medical knowledge base, labeled Case 1, Case 2, etc. \
+  Each has an image and clinical metadata.
+- Optionally, a USER IMAGE as the final image — this is the PRIMARY subject to analyse.
+
+Your first task is to SELECT the single reference case that best matches the condition visible \
+in the user image (or the description if no image is uploaded). Then provide the full assessment.
 
 Respond in this EXACT structure:
+
+---
+
+## 🎯 Selected Reference Case
+**Case [N] — [Diagnosis in plain English]**
+[1 sentence: the key visual or clinical reason this case was chosen over the others.]
 
 ---
 
@@ -686,7 +775,6 @@ warning signs the user should watch for. Each must be:
 - Written as: "If [specific observable sign], then [action]"
 - Grounded in clinical knowledge of the identified condition
 
-Example format (do NOT copy these — generate ones specific to your identified condition):
 1. If [condition-specific sign], [action].
 2. ...
 3. ...
@@ -698,9 +786,7 @@ Example format (do NOT copy these — generate ones specific to your identified 
 ## 🩺 Overall Assessment
 **Severity: [Minor / Moderate / Major]** — based on what is visible in the image.
 
-[1–2 warm, direct sentences: e.g. "This looks like a minor concern based on the image, \
-but given its location and appearance, a routine check with a GP or dermatologist is a sensible \
-next step. You do not need to rush, but do not ignore it either."]
+[1–2 warm, direct sentences about the finding and recommended next step.]
 
 ---
 
@@ -871,92 +957,49 @@ if submitted:
 
     st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
 
-    # ── Shimmer placeholders while loading ──────
-    st.markdown('<div class="section-title">🔎 Searching knowledge base</div>', unsafe_allow_html=True)
-    ph1, ph2 = st.columns(2, gap="large")
-    with ph1:
-        shimmer1 = st.markdown('<div class="shimmer-box"></div>', unsafe_allow_html=True)
-    with ph2:
-        shimmer2 = st.markdown('<div class="shimmer-box"></div>', unsafe_allow_html=True)
+    # ── Retrieval shimmers (5 columns) ──────────
+    st.markdown('<div class="section-title">🔎 Retrieving similar cases from knowledge base</div>', unsafe_allow_html=True)
+    shimmer_cols = st.columns(5, gap="small")
+    shimmer_phs  = [col.markdown('<div class="shimmer-box" style="height:220px"></div>', unsafe_allow_html=True)
+                    for col in shimmer_cols]
 
     if uploaded_pil is not None:
         results = query_db(query_image=uploaded_pil, query_text=query.strip() or None)
     else:
         results = query_db(query_text=search_query)
 
-    # Replace shimmers with real content
-    shimmer1.empty(); shimmer2.empty()
+    # ── Replace shimmers with retrieved chunk cards ──
+    for ph in shimmer_phs:
+        ph.empty()
 
-    # # ── Match Cards ─────────────────────────────
-    # st.markdown('<div class="section-title">🧬 Similar Cases from Knowledge Base</div>', unsafe_allow_html=True)
-    # match_cols = st.columns(2, gap="large")
-    # colors = [("match-num-1", "#818cf8"), ("match-num-2", "#22d3ee")]
+    uris_r  = results["uris"][0]
+    metas_r = results["metadatas"][0]
+    dists_r = results["distances"][0]
+    cb_cls  = ["cb-1", "cb-2", "cb-3", "cb-4", "cb-5"]
 
-    # for idx, (uri, meta) in enumerate(zip(results["uris"][0], results["metadatas"][0])):
-    #     num_class, _ = colors[idx]
-    #     dx      = meta.get("dx", "unknown").replace("_", " ").title()
-    #     loc     = meta.get("localization", "—").replace("_", " ").title()
-    #     age     = meta.get("age", "—")
-    #     sex     = meta.get("sex", "—").title()
-    #     dx_type = meta.get("dx_type", "—")
-
-    #     with match_cols[idx]:
-    #         st.markdown(f"""
-    #         <div class="match-card">
-    #             <div class="match-card-header">
-    #                 <span class="match-num {num_class}">Match {idx + 1}</span>
-    #                 <span class="match-dx">{dx}</span>
-    #             </div>
-    #         </div>
-    #         """, unsafe_allow_html=True)
-    #         img = Image.open(uri)
-    #         st.image(img, width=400)
-    #         st.markdown(f"""
-    #         <div class="match-card-body">
-    #             <div class="meta-row">
-    #                 <span class="meta-chip chip-loc">📍 {loc}</span>
-    #                 <span class="meta-chip chip-age">🧑 Age {age}</span>
-    #                 <span class="meta-chip chip-sex">⚧ {sex}</span>
-    #                 <span class="meta-chip chip-type">🔬 {dx_type}</span>
-    #             </div>
-    #         </div>
-    #         """, unsafe_allow_html=True)
-
-    # st.markdown('<hr class="styled-divider">', unsafe_allow_html=True)
-
-    # ── Majority-vote classification ─────────────
-    winning_dx, match_uri, match_meta = classify_top_match(results)
-
-    # ── Single Match Card ────────────────────────
-    st.markdown('<div class="section-title">🧬 Classified Condition</div>', unsafe_allow_html=True)
-    card_col, _ = st.columns([1, 1], gap="large")
-
-    dx      = match_meta.get("dx", "unknown").replace("_", " ").title()
-    loc     = match_meta.get("localization", "—").replace("_", " ").title()
-    age     = match_meta.get("age", "—")
-    sex     = match_meta.get("sex", "—").title()
-    dx_type = match_meta.get("dx_type", "—")
-
-    with card_col:
-        st.markdown(f"""
-        <div class="match-card">
-            <div class="match-card-header">
-                <span class="match-num match-num-1">Classification</span>
-                <span class="match-dx">{dx}</span>
+    chunk_cols = st.columns(len(uris_r), gap="small")
+    for idx, (col, uri, meta, dist) in enumerate(zip(chunk_cols, uris_r, metas_r, dists_r)):
+        with col:
+            dx_lbl  = meta.get("dx", "unknown").replace("_", " ").title()
+            loc_lbl = meta.get("localization", "—").replace("_", " ").title()
+            age_lbl = meta.get("age", "—")
+            sex_lbl = meta.get("sex", "—").title()
+            sim_pct = max(0.0, 1.0 - dist) * 100
+            st.markdown(f"""
+            <div class="chunk-card">
+                <div class="chunk-header">
+                    <span class="chunk-badge {cb_cls[idx]}">Case {idx+1}</span>
+                    <span class="chunk-dx">{dx_lbl}</span>
+                    <span class="chunk-sim">{sim_pct:.0f}%</span>
+                </div>
+                <div class="chunk-meta">
+                    📍 {loc_lbl}<br>🧑 Age {age_lbl} &nbsp;⚧ {sex_lbl}
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.image(Image.open(match_uri), width=400)
-        st.markdown(f"""
-        <div class="match-card-body">
-            <div class="meta-row">
-                <span class="meta-chip chip-loc">📍 {loc}</span>
-                <span class="meta-chip chip-age">🧑 Age {age}</span>
-                <span class="meta-chip chip-sex">⚧ {sex}</span>
-                <span class="meta-chip chip-type">🔬 {dx_type}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+            st.image(Image.open(uri), use_container_width=True)
+
+    st.markdown('<hr class="styled-divider">', unsafe_allow_html=True)
 
     # ── AI Analysis ─────────────────────────────
     st.markdown('<div class="section-title">🤖 AI Clinical Assessment</div>', unsafe_allow_html=True)
@@ -967,31 +1010,12 @@ if submitted:
         st.error("OPENAI_API_KEY is not configured. Add it as a hosted secret before running analysis.")
         st.stop()
 
-     with st.spinner(""):
+    with st.spinner(""):
         vision_model = get_vision_model()
-        vision_chain = image_prompt | vision_model | parser
-        prompt_input = format_prompt_inputs(match_uri, match_meta, search_query, uploaded_image_b64)
+        user_content = build_multi_case_message(results, search_query, uploaded_image_b64, uploaded_mime)
+        raw          = vision_model.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content)])
+        response     = parser.invoke(raw)
 
-        if uploaded_image_b64:
-            user_text = (
-                f"Additional context from the user (if any): {query if query.strip() else 'None provided.'}\n\n"
-                f"Classified case from knowledge base — clinical metadata:\n{prompt_input['metadata_context']}\n\n"
-                "Image 1 is the closest matching reference case from the database. "
-                "Image 2 is the user's uploaded skin image — this is the PRIMARY subject to analyse. "
-                "Visually compare Image 2 with Image 1, then provide your full structured assessment."
-            )
-            user_content = [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{prompt_input['image_data_1']}"}},
-                {"type": "image_url", "image_url": {"url": f"data:{uploaded_mime};base64,{uploaded_image_b64}"}},
-            ]
-            raw = vision_model.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content)])
-            response = parser.invoke(raw)
-        else:
-            prompt_input["uploaded_note"] = ""
-            response = vision_chain.invoke(prompt_input)
-
-    # Replace shimmer with result
     ai_placeholder.empty()
     st.markdown(f"""
     <div class="insights-wrap">
@@ -999,6 +1023,39 @@ if submitted:
         <div class="insights-body">{response}</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Final Classification (LLM-chosen case) ───
+    chosen_uri, chosen_meta = extract_chosen_case(response, results)
+
+    st.markdown('<div class="section-title">🧬 Final Classification</div>', unsafe_allow_html=True)
+    card_col, _ = st.columns([1, 1], gap="large")
+
+    dx      = chosen_meta.get("dx", "unknown").replace("_", " ").title()
+    loc     = chosen_meta.get("localization", "—").replace("_", " ").title()
+    age     = chosen_meta.get("age", "—")
+    sex     = chosen_meta.get("sex", "—").title()
+    dx_type = chosen_meta.get("dx_type", "—")
+
+    with card_col:
+        st.markdown(f"""
+        <div class="match-card">
+            <div class="match-card-header">
+                <span class="match-num match-num-1">AI Selected</span>
+                <span class="match-dx">{dx}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.image(Image.open(chosen_uri), width=400)
+        st.markdown(f"""
+        <div class="match-card-body">
+            <div class="meta-row">
+                <span class="meta-chip chip-loc">📍 {loc}</span>
+                <span class="meta-chip chip-age">🧑 Age {age}</span>
+                <span class="meta-chip chip-sex">⚧ {sex}</span>
+                <span class="meta-chip chip-type">🔬 {dx_type}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="warn-bar">
